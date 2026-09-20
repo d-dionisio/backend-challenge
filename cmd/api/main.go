@@ -1,9 +1,10 @@
 package main
 
 import (
-	"github.com/d-dionisio/backend-challenge/internal/infrastructure/postgres"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/fx"
+
+	"github.com/d-dionisio/backend-challenge/internal/application/ports"
+	"github.com/d-dionisio/backend-challenge/internal/infrastructure/postgres"
 )
 
 func main() {
@@ -11,7 +12,10 @@ func main() {
 		postgres.Module,
 
 		fx.Invoke(
-			func(pool *pgxpool.Pool) {},
+			func(
+				repository ports.WalletRepository,
+			) {
+			},
 		),
 	)
 

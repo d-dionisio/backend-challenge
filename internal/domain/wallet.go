@@ -2,12 +2,14 @@ package domain
 
 import (
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 )
 
 var (
+	ErrInvalidWallet       = errors.New("invalid wallet")
 	ErrInsufficientBalance = errors.New("insufficient balance")
 	ErrWalletCurrency      = errors.New("wallet currency mismatch")
 )
@@ -48,6 +50,14 @@ func (w *Wallet) Balance() Money {
 
 func (w *Wallet) Version() int64 {
 	return w.version
+}
+
+func (w *Wallet) CreatedAt() time.Time {
+	return w.createdAt
+}
+
+func (w *Wallet) UpdatedAt() time.Time {
+	return w.updatedAt
 }
 
 func (w *Wallet) Credit(money Money) error {
@@ -91,4 +101,40 @@ func (w *Wallet) Debit(money Money) error {
 	w.updatedAt = time.Now().UTC()
 
 	return nil
+}
+
+func RehydrateWallet(id uuid.UUID, playerID uuid.UUID, balance Money, version int64, createdAt time.Time, updatedAt time.Time) (*Wallet, error) {
+
+	if id == uuid.Nil || playerID == uuid.Nil {
+		return nil, ErrInvalidWallet
+	}
+
+	if version < 1 {
+		return nil, ErrInvalidWallet
+	}
+
+	if balance.Amount() < 0 {
+		return nil, ErrInvalidWallet
+	}
+
+	return &Wallet{
+		id:        id,
+		playerID:  playerID,
+		balance:   balance,
+		version:   version,
+		createdAt: createdAt,
+		updatedAt: updatedAt,
+	}, nil
+}
+
+func MoneyFromMinorUnits(amount int64, currency string) (Money, error) {
+
+	if strings.TrimSpace(currency) == "" {
+		return Money{}, ErrInvalidMoney
+	}
+
+	return Money{
+		amount:   amount,
+		currency: currency,
+	}, nil
 }
