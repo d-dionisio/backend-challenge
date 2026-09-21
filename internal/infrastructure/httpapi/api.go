@@ -137,6 +137,7 @@ func (a *API) getWallet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) createWager(w http.ResponseWriter, r *http.Request) {
+	started := time.Now()
 
 	keys := r.Header.Values("Idempotency-Key")
 	if len(keys) != 1 || strings.TrimSpace(keys[0]) == "" {
@@ -177,6 +178,7 @@ func (a *API) createWager(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, r, err)
 		return
 	}
+	a.metrics.ObserveWagerResult(string(result.Status), result.IdempotentReplay, time.Since(started))
 
 	status := http.StatusOK
 

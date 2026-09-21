@@ -20,6 +20,7 @@ type PendingEvent struct {
 	ProviderID    string
 	Payload       []byte
 	Attempts      int
+	OccurredAt    time.Time
 	LockToken     uuid.UUID
 }
 

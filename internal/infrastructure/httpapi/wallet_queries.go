@@ -55,7 +55,7 @@ func (a *API) reconcileWalletBalance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !result.Consistent {
-		a.metrics.reconciliationDivergences.Add(1)
+		a.metrics.AddReconciliationDivergence()
 		a.logger.Warn("wallet reconciliation divergence", "correlationId", correlationID(r), "walletId", walletID, "consistent", false, "checkedEntries", result.CheckedEntries)
 	}
 	writeJSON(w, 200, result)

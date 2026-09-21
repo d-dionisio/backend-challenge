@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/d-dionisio/backend-challenge/internal/application"
+	"github.com/d-dionisio/backend-challenge/internal/observability"
 	"go.uber.org/fx"
 )
 
@@ -52,7 +53,7 @@ func (c OutboxConfig) validate() error {
 	return nil
 }
 
-func RegisterOutboxWorker(lifecycle fx.Lifecycle, config OutboxConfig, useCase *application.PublishOutbox) error {
+func RegisterOutboxWorker(lifecycle fx.Lifecycle, config OutboxConfig, useCase *application.PublishOutbox, metrics *observability.Metrics) error {
 	if err := config.validate(); err != nil {
 		return err
 	}
@@ -76,13 +77,16 @@ func RegisterOutboxWorker(lifecycle fx.Lifecycle, config OutboxConfig, useCase *
 					}
 					if err != nil {
 						if event != nil {
+							metrics.ObserveOutboxPublish("retry", event.Attempts, event.OccurredAt)
 							logger.Error("outbox attempt failed", "eventId", event.EventID, "walletId", event.AggregateID,
 								"transactionId", event.TransactionID, "providerId", event.ProviderID,
 								"correlationId", event.CorrelationID, "attempts", event.Attempts)
 						} else {
+							metrics.ObserveOutboxClaimFailure()
 							logger.Error("outbox claim failed")
 						}
 					} else if event != nil {
+						metrics.ObserveOutboxPublish("published", event.Attempts, event.OccurredAt)
 						logger.Info("outbox published", "eventId", event.EventID, "walletId", event.AggregateID,
 							"transactionId", event.TransactionID, "providerId", event.ProviderID,
 							"correlationId", event.CorrelationID, "attempts", event.Attempts)

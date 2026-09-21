@@ -18,6 +18,7 @@ import (
 	"github.com/d-dionisio/backend-challenge/internal/application"
 	"github.com/d-dionisio/backend-challenge/internal/application/ports"
 	"github.com/d-dionisio/backend-challenge/internal/domain"
+	"github.com/d-dionisio/backend-challenge/internal/observability"
 	"go.uber.org/fx"
 )
 
@@ -26,14 +27,15 @@ type SQSConsumer struct {
 	eventsQueueURL string
 	settings       ConsumerConfig
 	useCase        *application.ProcessWager
+	metrics        *observability.Metrics
 	logger         *slog.Logger
 }
 
-func NewSQSConsumer(lifecycle fx.Lifecycle, connection Config, settings ConsumerConfig, useCase *application.ProcessWager) (*SQSConsumer, error) {
+func NewSQSConsumer(lifecycle fx.Lifecycle, connection Config, settings ConsumerConfig, useCase *application.ProcessWager, metrics *observability.Metrics) (*SQSConsumer, error) {
 	if err := settings.validate(); err != nil {
 		return nil, err
 	}
-	c := &SQSConsumer{settings: settings, eventsQueueURL: connection.QueueURL, useCase: useCase, logger: slog.New(slog.NewJSONHandler(os.Stdout, nil))}
+	c := &SQSConsumer{settings: settings, eventsQueueURL: connection.QueueURL, useCase: useCase, metrics: metrics, logger: slog.New(slog.NewJSONHandler(os.Stdout, nil))}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	lifecycle.Append(fx.Hook{
 		OnStart: func(ctx context.Context) error {
@@ -115,6 +117,7 @@ func (c *SQSConsumer) ChangeVisibility(ctx context.Context, message *types.Messa
 }
 
 func (c *SQSConsumer) Handle(ctx context.Context, received *types.Message) error {
+	started := time.Now()
 	// No shutdown, não dependemos do contexto já cancelado para liberar a
 	// mensagem. Se o broker estiver indisponível, a reserva vence sozinha.
 	defer func() {
@@ -151,6 +154,14 @@ func (c *SQSConsumer) Handle(ctx context.Context, received *types.Message) error
 		if permanent {
 			delay = 0
 		} // O redrive do broker encaminha à DLQ após 5 recebimentos.
+		if permanent || attempt >= 5 {
+			c.metrics.ObserveDeadLetter(errorMetricReason(err))
+		} else {
+			c.metrics.ObserveMessageRetry(errorMetricReason(err))
+		}
+		if errors.Is(err, application.ErrIdempotencyConflict) || errors.Is(err, ports.ErrInboxConflict) || errors.Is(err, ports.ErrInboxIncomplete) {
+			c.metrics.ObserveConcurrencyConflict(errorMetricReason(err))
+		}
 		c.logger.Error("SQS treatment failed", "messageId", message.MessageID, "correlationId", input.CorrelationID,
 			"providerId", input.ProviderID, "walletId", input.WalletID, "permanent", permanent, "attempts", attempt)
 		if ctx.Err() != nil {
@@ -165,9 +176,32 @@ func (c *SQSConsumer) Handle(ctx context.Context, received *types.Message) error
 	if err != nil {
 		return err
 	}
+	c.metrics.ObserveWagerResult(string(result.Status), result.IdempotentReplay, time.Since(started))
+	if result.IdempotentReplay {
+		c.metrics.ObserveDuplicateMessage("sqs_replay")
+	}
 	c.logger.Info("SQS treatment acknowledged", "messageId", message.MessageID, "correlationId", input.CorrelationID,
 		"providerId", input.ProviderID, "walletId", input.WalletID, "transactionId", result.TransactionID, "status", result.Status, "replay", result.IdempotentReplay)
 	return nil
+}
+
+func errorMetricReason(err error) string {
+	switch {
+	case errors.Is(err, application.ErrInvalidMessage):
+		return "invalid_message"
+	case errors.Is(err, application.ErrProviderNotAuthorized):
+		return "provider_not_authorized"
+	case errors.Is(err, application.ErrIdempotencyConflict):
+		return "idempotency_conflict"
+	case errors.Is(err, application.ErrWalletIdentityMismatch):
+		return "wallet_identity_mismatch"
+	case errors.Is(err, ports.ErrInboxConflict):
+		return "inbox_conflict"
+	case errors.Is(err, ports.ErrInboxIncomplete):
+		return "inbox_incomplete"
+	default:
+		return "processing_error"
+	}
 }
 
 func messageRetryDelay(attempt int) int32 {

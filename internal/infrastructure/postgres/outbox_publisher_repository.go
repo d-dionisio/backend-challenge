@@ -36,10 +36,10 @@ func (r *OutboxPublisherRepository) Claim(ctx context.Context, lease time.Durati
 	FROM candidate c WHERE o.event_id=c.event_id
 	RETURNING o.event_id,o.aggregate_id,o.event_type,o.payload->>'correlationId',
 		COALESCE(o.payload->'data'->>'transactionId',''),COALESCE(o.payload->'data'->>'providerId',''),
-		o.payload,o.attempts,o.lock_token`, uuid.New(), lease.Microseconds()).Scan(
+		o.payload,o.attempts,o.occurred_at,o.lock_token`, uuid.New(), lease.Microseconds()).Scan(
 		&event.EventID, &event.AggregateID, &event.EventType, &event.CorrelationID,
 		&event.TransactionID, &event.ProviderID,
-		&event.Payload, &event.Attempts, &event.LockToken)
+		&event.Payload, &event.Attempts, &event.OccurredAt, &event.LockToken)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
