@@ -1,7 +1,42 @@
 services:
+  app:
+    build: .
+    ports:
+      - "${APP_PORT:-8080}:8080"
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-wagering}?sslmode=disable
+      HTTP_ADDRESS: :8080
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      SQS_ENDPOINT: http://localstack:4566
+      SQS_EVENTS_QUEUE_URL: http://localstack:4566/queue/us-east-1/000000000000/wager-events
+      SQS_WAGERS_QUEUE_URL: http://localstack:4566/queue/us-east-1/000000000000/wager-transactions.fifo
+      SQS_PROVIDER_BY_SENDER: '{"000000000000":"provider-a"}'
+      OIDC_ISSUER_URL: ${KEYCLOAK_HOSTNAME:-http://keycloak:8080}/realms/wagering
+      OIDC_AUDIENCE: wagering-api
+      OIDC_CLIENT_ID: wagering-api
+      OIDC_CLIENT_SECRET: local-api-secret
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      localstack:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+    stop_grace_period: 30s
+
+  migrate:
+    image: migrate/migrate:v4.18.3
+    volumes:
+      - ./migrations:/migrations:ro
+    command: ["-path", "/migrations", "-database", "postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-wagering}?sslmode=disable", "up"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   postgres:
     image: postgres:16-alpine
-    container_name: wagering-postgres
 
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
@@ -9,13 +44,13 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-wagering}
 
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
 
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d wagering"]
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -31,7 +66,7 @@ services:
     volumes:
       - ./scripts/init-sqs.py:/etc/localstack/init/ready.d/init-sqs.py:ro
     healthcheck:
-      test: ["CMD-SHELL", "awslocal sqs get-queue-url --queue-name wager-events --region us-east-1 > /dev/null"]
+      test: ["CMD-SHELL", "test -f /tmp/wager-queues-ready && awslocal sqs get-queue-url --queue-name wager-transactions.fifo --region us-east-1 > /dev/null"]
       interval: 5s
       timeout: 5s
       retries: 20
@@ -43,6 +78,7 @@ services:
       - "${KEYCLOAK_PORT:-18080}:8080"
     environment:
       KC_HEALTH_ENABLED: "true"
+      KC_HOSTNAME: ${KEYCLOAK_HOSTNAME:-http://keycloak:8080}
     volumes:
       - ./deploy/keycloak:/opt/keycloak/data/import:ro
     healthcheck:

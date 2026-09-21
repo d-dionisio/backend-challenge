@@ -1,5 +1,8 @@
 import boto3
 import json
+from pathlib import Path
+
+Path('/tmp/wager-queues-ready').unlink(missing_ok=True)
 
 # Executado pelo LocalStack ao ficar pronto. CreateQueue também aceita
 # uma fila já existente com os mesmos atributos.
@@ -79,3 +82,6 @@ sqs.set_queue_attributes(
         )
     },
 )
+
+# Sinaliza que todas as filas e policies foram provisionadas.
+Path('/tmp/wager-queues-ready').touch()

@@ -1,0 +1,10 @@
+.git
+.gocache
+.env
+.env.*
+docs
+*.exe
+*.test
+coverage*
+.codex
+.agents
