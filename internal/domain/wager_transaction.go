@@ -10,7 +10,7 @@ import (
 
 type WagerKind string
 
-var (
+const (
 	WagerKindOpening  WagerKind = "OPENING"
 	WagerKindBet      WagerKind = "BET"
 	WagerKindWin      WagerKind = "WIN"
@@ -21,9 +21,9 @@ var (
 
 type WagerStatus string
 
-var (
+const (
 	WagerStatusPending          WagerStatus = "PENDING"
-	WagerStatusPendingReference WagerStatus = "PEDING_REFERENCE"
+	WagerStatusPendingReference WagerStatus = "PENDING_REFERENCE"
 	WagerStatusProcessed        WagerStatus = "PROCESSED"
 	WagerStatusRejected         WagerStatus = "REJECTED"
 	WagerStatusFailed           WagerStatus = "FAILED"
@@ -37,6 +37,8 @@ var (
 	ErrReferenceRequired       = errors.New("reference transaction required")
 	ErrTerminalTransaction     = errors.New("transaction is already terminal")
 	ErrExternalOpening         = errors.New("opening cannot be created externally")
+	ErrInvalidWagerReference   = errors.New("invalid wager reference")
+	ErrReferenceNotProcessed   = errors.New("reference is not processed")
 )
 
 type WagerTransaction struct {
@@ -74,10 +76,6 @@ func NewWagerTransaction(
 	referenceExternalTransactionID *string,
 ) (*WagerTransaction, error) {
 
-	if strings.TrimSpace(providerID) == "" || strings.TrimSpace(externalTransactionID) == "" || strings.TrimSpace(idempotencyKey) == "" || strings.TrimSpace(payloadHash) == "" || walletID == uuid.Nil || playerID == uuid.Nil || strings.TrimSpace(roundID) == "" || strings.TrimSpace(gameID) == "" {
-		return nil, ErrInvalidWagerTransaction
-	}
-
 	if !kind.IsValid() {
 		return nil, ErrInvalidWagerKind
 	}
@@ -96,7 +94,7 @@ func NewWagerTransaction(
 
 	now := time.Now().UTC()
 
-	return &WagerTransaction{
+	transaction := &WagerTransaction{
 		id:                             uuid.New(),
 		externalTransactionID:          externalTransactionID,
 		providerID:                     providerID,
@@ -108,11 +106,15 @@ func NewWagerTransaction(
 		gameID:                         gameID,
 		kind:                           kind,
 		money:                          money,
-		referenceExternalTransactionID: referenceExternalTransactionID,
+		referenceExternalTransactionID: copyString(referenceExternalTransactionID),
 		status:                         WagerStatusPending,
 		createdAt:                      now,
 		updatedAt:                      now,
-	}, nil
+	}
+	if err := transaction.validate(); err != nil {
+		return nil, err
+	}
+	return transaction, nil
 }
 
 func (k WagerKind) IsValid() bool {
@@ -131,13 +133,14 @@ func (k WagerKind) IsValid() bool {
 }
 
 func validateWagerMoney(kind WagerKind, money Money, referenceExternalTransactionID *string) error {
+	if money.Validate() != nil {
+		return ErrInvalidWagerMoney
+	}
+	if referenceExternalTransactionID != nil && strings.TrimSpace(*referenceExternalTransactionID) == "" {
+		return ErrReferenceRequired
+	}
 	switch kind {
-	case WagerKindBet:
-		if !money.IsPositive() {
-			return ErrInvalidWagerMoney
-		}
-
-	case WagerKindWin:
+	case WagerKindOpening, WagerKindBet, WagerKindWin:
 		if !money.IsPositive() {
 			return ErrInvalidWagerMoney
 		}
@@ -212,19 +215,27 @@ func (w *WagerTransaction) Status() WagerStatus {
 }
 
 func (w *WagerTransaction) FailureCode() *string {
-	return w.failureCode
+	return copyString(w.failureCode)
 }
 
 func (w *WagerTransaction) ResultBalance() *Money {
-	return w.resultBalance
+	if w.resultBalance == nil {
+		return nil
+	}
+	balance := *w.resultBalance
+	return &balance
 }
 
 func (w *WagerTransaction) ReferenceExternalTransactionID() *string {
-	return w.referenceExternalTransactionID
+	return copyString(w.referenceExternalTransactionID)
 }
 
 func (w *WagerTransaction) ReferenceTransactionID() *uuid.UUID {
-	return w.referenceTransactionID
+	if w.referenceTransactionID == nil {
+		return nil
+	}
+	id := *w.referenceTransactionID
+	return &id
 }
 
 func (w *WagerTransaction) IsTerminal() bool {
@@ -241,11 +252,11 @@ func (w *WagerTransaction) IsTerminal() bool {
 }
 
 func (w *WagerTransaction) MarkPendingReference() error {
-	if w.IsTerminal() {
-		return ErrTerminalTransaction
+	if err := w.canChange(); err != nil {
+		return err
 	}
 
-	if w.kind != WagerKindRefund && w.kind != WagerKindRollback {
+	if w.status != WagerStatusPending || !w.needsReference() || w.referenceTransactionID != nil {
 		return ErrInvalidWagerStatus
 	}
 
@@ -255,15 +266,14 @@ func (w *WagerTransaction) MarkPendingReference() error {
 	return nil
 }
 
-func (w *WagerTransaction) ResolveReference(transactionID uuid.UUID) error {
-	if w.IsTerminal() {
-		return ErrTerminalTransaction
+func (w *WagerTransaction) ResolveReference(reference *WagerTransaction) error {
+	if err := w.canChange(); err != nil {
+		return err
 	}
-
-	if transactionID == uuid.Nil {
-		return ErrInvalidWagerTransaction
+	if err := w.validateReference(reference); err != nil {
+		return err
 	}
-
+	transactionID := reference.ID()
 	w.referenceTransactionID = &transactionID
 	w.updatedAt = time.Now().UTC()
 
@@ -271,12 +281,21 @@ func (w *WagerTransaction) ResolveReference(transactionID uuid.UUID) error {
 }
 
 func (w *WagerTransaction) MarkProcessed(balance Money) error {
-	if w.IsTerminal() {
-		return ErrTerminalTransaction
+	if err := w.canChange(); err != nil {
+		return err
+	}
+	if balance.Validate() != nil || balance.Amount() < 0 {
+		return ErrInvalidWagerMoney
+	}
+	if w.needsReference() && w.referenceTransactionID == nil {
+		return ErrReferenceRequired
 	}
 
 	if balance.Currency() != w.money.Currency() {
 		return ErrCurrencyMismatch
+	}
+	if w.kind == WagerKindOpening && balance != w.money {
+		return ErrInvalidWagerMoney
 	}
 
 	w.status = WagerStatusProcessed
@@ -287,8 +306,8 @@ func (w *WagerTransaction) MarkProcessed(balance Money) error {
 }
 
 func (w *WagerTransaction) Reject(failureCode string) error {
-	if w.IsTerminal() {
-		return ErrTerminalTransaction
+	if err := w.canChange(); err != nil {
+		return err
 	}
 
 	if strings.TrimSpace(failureCode) == "" {
@@ -303,8 +322,8 @@ func (w *WagerTransaction) Reject(failureCode string) error {
 }
 
 func (w *WagerTransaction) Fail(failureCode string) error {
-	if w.IsTerminal() {
-		return ErrTerminalTransaction
+	if err := w.canChange(); err != nil {
+		return err
 	}
 
 	if strings.TrimSpace(failureCode) == "" {
@@ -315,5 +334,70 @@ func (w *WagerTransaction) Fail(failureCode string) error {
 	w.failureCode = &failureCode
 	w.updatedAt = time.Now().UTC()
 
+	return nil
+}
+
+func (w *WagerTransaction) CreatedAt() time.Time { return w.createdAt }
+
+func (w *WagerTransaction) UpdatedAt() time.Time { return w.updatedAt }
+
+func copyString(value *string) *string {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
+}
+
+func (w *WagerTransaction) needsReference() bool {
+	return w.kind == WagerKindRefund || w.kind == WagerKindRollback ||
+		(w.kind == WagerKindWin && w.referenceExternalTransactionID != nil)
+}
+
+func (w *WagerTransaction) canChange() error {
+	if err := w.validate(); err != nil {
+		return err
+	}
+	if w.IsTerminal() {
+		return ErrTerminalTransaction
+	}
+	return nil
+}
+
+func (w *WagerTransaction) validateReference(reference *WagerTransaction) error {
+	if !w.needsReference() || reference == nil {
+		return ErrInvalidWagerReference
+	}
+	if reference.validate() != nil || reference.id == w.id {
+		return ErrInvalidWagerReference
+	}
+	if reference.providerID != w.providerID || reference.externalTransactionID != *w.referenceExternalTransactionID {
+		return ErrInvalidWagerReference
+	}
+	if reference.walletID != w.walletID || reference.playerID != w.playerID {
+		return ErrInvalidWagerReference
+	}
+	if reference.money.Currency() != w.money.Currency() || reference.roundID != w.roundID {
+		return ErrInvalidWagerReference
+	}
+	if w.referenceTransactionID != nil && *w.referenceTransactionID != reference.id {
+		return ErrInvalidWagerReference
+	}
+	if reference.status != WagerStatusProcessed {
+		return ErrReferenceNotProcessed
+	}
+	switch w.kind {
+	case WagerKindWin, WagerKindRefund:
+		if reference.kind != WagerKindBet {
+			return ErrInvalidWagerReference
+		}
+	case WagerKindRollback:
+		if reference.kind != WagerKindBet && reference.kind != WagerKindWin && reference.kind != WagerKindRefund {
+			return ErrInvalidWagerReference
+		}
+	}
+	if w.kind != WagerKindWin && reference.money != w.money {
+		return ErrInvalidWagerReference
+	}
 	return nil
 }
