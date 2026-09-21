@@ -10,7 +10,32 @@ sqs = boto3.client(
     aws_access_key_id="test",
     aws_secret_access_key="test",
 )
-sqs.create_queue(QueueName="wager-events")
+account = "000000000000"
+producer_principal = f"arn:aws:iam::{account}:root"
+consumer_principal = f"arn:aws:iam::{account}:root"
+
+events = sqs.create_queue(QueueName="wager-events")["QueueUrl"]
+events_arn = sqs.get_queue_attributes(
+    QueueUrl=events, AttributeNames=["QueueArn"]
+)["Attributes"]["QueueArn"]
+sqs.set_queue_attributes(
+    QueueUrl=events,
+    Attributes={
+        "Policy": json.dumps(
+            {
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Effect": "Allow",
+                        "Principal": {"AWS": consumer_principal},
+                        "Action": "sqs:SendMessage",
+                        "Resource": events_arn,
+                    }
+                ],
+            }
+        )
+    },
+)
 
 dlq = sqs.create_queue(
     QueueName="wager-transactions-dlq.fifo",
@@ -35,4 +60,22 @@ source_arn = sqs.get_queue_attributes(
 sqs.set_queue_attributes(
     QueueUrl=dlq,
     Attributes={"RedriveAllowPolicy": json.dumps({"redrivePermission": "byQueue", "sourceQueueArns": [source_arn]})},
+)
+sqs.set_queue_attributes(
+    QueueUrl=source,
+    Attributes={
+        "Policy": json.dumps(
+            {
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Effect": "Allow",
+                        "Principal": {"AWS": producer_principal},
+                        "Action": "sqs:SendMessage",
+                        "Resource": source_arn,
+                    }
+                ],
+            }
+        )
+    },
 )

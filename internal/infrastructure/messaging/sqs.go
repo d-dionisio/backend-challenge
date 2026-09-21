@@ -11,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
+	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
 	"github.com/d-dionisio/backend-challenge/internal/application/ports"
 	"go.uber.org/fx"
 )
@@ -67,10 +68,17 @@ func NewSQSPublisher(lifecycle fx.Lifecycle, settings Config) *SQSPublisher {
 				// O backoff persistente é responsabilidade da outbox.
 				options.RetryMaxAttempts = 1
 			})
-			_, err = publisher.client.GetQueueAttributes(ctx, &sqs.GetQueueAttributesInput{QueueUrl: aws.String(settings.QueueURL)})
+			attributes, err := publisher.client.GetQueueAttributes(ctx, &sqs.GetQueueAttributesInput{
+				QueueUrl: aws.String(settings.QueueURL), AttributeNames: []types.QueueAttributeName{types.QueueAttributeNamePolicy},
+			})
 			if err != nil {
 				transport.CloseIdleConnections()
 				return errors.New("SQS events queue is unavailable or access is denied")
+			}
+			if validateQueuePolicy(attributes.Attributes["Policy"], "sqs:SendMessage") != nil ||
+				validateNoWildcardAdministration(attributes.Attributes["Policy"]) != nil {
+				transport.CloseIdleConnections()
+				return errors.New("SQS events queue IAM policy is not least-privilege")
 			}
 			return nil
 		},

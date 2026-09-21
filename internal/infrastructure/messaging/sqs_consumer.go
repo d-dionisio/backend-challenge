@@ -50,7 +50,9 @@ func NewSQSConsumer(lifecycle fx.Lifecycle, connection Config, settings Consumer
 				o.RetryMaxAttempts = 1
 			})
 			attributes, err := c.client.GetQueueAttributes(ctx, &sqs.GetQueueAttributesInput{
-				QueueUrl: aws.String(settings.QueueURL), AttributeNames: []types.QueueAttributeName{types.QueueAttributeNameFifoQueue, types.QueueAttributeNameRedrivePolicy},
+				QueueUrl: aws.String(settings.QueueURL), AttributeNames: []types.QueueAttributeName{
+					types.QueueAttributeNameFifoQueue, types.QueueAttributeNameQueueArn, types.QueueAttributeNameRedrivePolicy, types.QueueAttributeNamePolicy,
+				},
 			})
 			if err != nil {
 				transport.CloseIdleConnections()
@@ -65,11 +67,36 @@ func NewSQSConsumer(lifecycle fx.Lifecycle, connection Config, settings Consumer
 				transport.CloseIdleConnections()
 				return errors.New("SQS input requires FIFO DLQ and maxReceiveCount=5")
 			}
+			if validateQueuePolicy(attributes.Attributes["Policy"], "sqs:SendMessage") != nil ||
+				validateNoWildcardAdministration(attributes.Attributes["Policy"]) != nil {
+				transport.CloseIdleConnections()
+				return errors.New("SQS input queue IAM policy is not least-privilege")
+			}
+			dlqURL, err := c.client.GetQueueUrl(ctx, &sqs.GetQueueUrlInput{QueueName: aws.String(queueNameFromARN(redrive.DeadLetterTargetArn))})
+			if err != nil {
+				transport.CloseIdleConnections()
+				return errors.New("SQS DLQ is unavailable or access is denied")
+			}
+			dlqAttributes, err := c.client.GetQueueAttributes(ctx, &sqs.GetQueueAttributesInput{
+				QueueUrl: dlqURL.QueueUrl, AttributeNames: []types.QueueAttributeName{types.QueueAttributeNameRedriveAllowPolicy},
+			})
+			if err != nil || validateRedriveAllowPolicy(dlqAttributes.Attributes["RedriveAllowPolicy"], attributes.Attributes["QueueArn"]) != nil {
+				transport.CloseIdleConnections()
+				return errors.New("SQS DLQ redrive policy is not restricted to the input queue")
+			}
 			return nil
 		},
 		OnStop: func(context.Context) error { transport.CloseIdleConnections(); return nil },
 	})
 	return c, nil
+}
+
+func queueNameFromARN(arn string) string {
+	parts := strings.Split(arn, ":")
+	if len(parts) == 0 {
+		return ""
+	}
+	return parts[len(parts)-1]
 }
 
 // Readiness consulta o broker sem receber ou publicar mensagens.
