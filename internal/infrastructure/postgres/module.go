@@ -11,6 +11,7 @@ var Module = fx.Module(
 	fx.Provide(
 		NewConfig,
 		NewPool,
+		fx.Annotate(NewUnitOfWork, fx.As(new(ports.UnitOfWork))),
 
 		fx.Annotate(
 			NewWalletRepository,
