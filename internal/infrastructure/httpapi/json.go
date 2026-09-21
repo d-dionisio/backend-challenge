@@ -71,6 +71,10 @@ func writeError(w http.ResponseWriter, status int, code string) {
 
 func errorResponse(err error) (int, string) {
 	switch {
+	case errors.Is(err, ports.ErrInvalidFinancialState):
+		return 500, "INVALID_FINANCIAL_STATE"
+	case errors.Is(err, application.ErrInvalidLedgerPage):
+		return 400, "INVALID_LEDGER_PAGE"
 	case errors.Is(err, application.ErrProviderNotAuthorized):
 		return 403, "FORBIDDEN"
 	case errors.Is(err, application.ErrIdempotencyConflict):

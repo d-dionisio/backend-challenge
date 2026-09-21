@@ -48,6 +48,8 @@ func TestErrorResponses(t *testing.T) {
 		code   string
 	}{
 		{application.ErrIdempotencyConflict, 409, "IDEMPOTENCY_CONFLICT"},
+		{application.ErrInvalidLedgerPage, 400, "INVALID_LEDGER_PAGE"},
+		{errors.Join(ports.ErrInvalidFinancialState, domain.ErrMoneyOverflow), 500, "INVALID_FINANCIAL_STATE"},
 		{ports.ErrWalletConflict, 409, "WALLET_ALREADY_EXISTS"},
 		{ports.ErrWalletNotFound, 404, "NOT_FOUND"},
 		{ports.ErrWagerNotFound, 404, "NOT_FOUND"},

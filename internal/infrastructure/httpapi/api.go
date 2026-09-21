@@ -16,16 +16,20 @@ import (
 )
 
 type API struct {
-	openWallet   *application.OpenWallet
-	processWager *application.ProcessWager
-	unit         ports.UnitOfWork
-	auth         *auth.Authenticator
-	readiness    *Readiness
-	logger       *slog.Logger
+	openWallet      *application.OpenWallet
+	processWager    *application.ProcessWager
+	unit            ports.UnitOfWork
+	auth            *auth.Authenticator
+	readiness       *Readiness
+	logger          *slog.Logger
+	listLedger      *application.ListLedger
+	reconcileWallet *application.ReconcileWallet
+	metrics         *Metrics
 }
 
-func NewAPI(open *application.OpenWallet, process *application.ProcessWager, unit ports.UnitOfWork, authenticator *auth.Authenticator, readiness *Readiness) *API {
-	return &API{openWallet: open, processWager: process, unit: unit, auth: authenticator, readiness: readiness, logger: slog.New(slog.NewJSONHandler(os.Stdout, nil))}
+func NewAPI(open *application.OpenWallet, process *application.ProcessWager, unit ports.UnitOfWork, authenticator *auth.Authenticator, readiness *Readiness, listLedger *application.ListLedger, reconcileWallet *application.ReconcileWallet, metrics *Metrics) *API {
+	return &API{openWallet: open, processWager: process, unit: unit, auth: authenticator, readiness: readiness,
+		listLedger: listLedger, reconcileWallet: reconcileWallet, metrics: metrics, logger: slog.New(slog.NewJSONHandler(os.Stdout, nil))}
 }
 
 func (a *API) Handler() http.Handler {
@@ -33,6 +37,9 @@ func (a *API) Handler() http.Handler {
 
 	mux.Handle("POST /wallets", a.auth.RequireInternal(http.HandlerFunc(a.createWallet)))
 	mux.Handle("GET /wallets/{walletId}", a.auth.RequireInternal(http.HandlerFunc(a.getWallet)))
+	mux.Handle("GET /wallets/{walletId}/ledger", a.auth.RequireInternal(http.HandlerFunc(a.listWalletLedger)))
+	mux.Handle("POST /wallets/{walletId}/reconciliation", a.auth.RequireInternal(http.HandlerFunc(a.reconcileWalletBalance)))
+	mux.Handle("GET /metrics", a.metrics)
 	mux.Handle("POST /wagering/transactions", a.auth.RequireProvider(http.HandlerFunc(a.createWager)))
 	mux.Handle("GET /wagering/transactions/{transactionId}", a.auth.RequireProvider(http.HandlerFunc(a.getTransaction)))
 	mux.Handle("GET /providers/{providerId}/wagering/transactions/{externalTransactionId}", a.auth.RequireProvider(http.HandlerFunc(a.getTransaction)))

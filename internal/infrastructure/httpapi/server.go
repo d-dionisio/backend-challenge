@@ -97,4 +97,4 @@ func NewServer(lifecycle fx.Lifecycle, config Config, api *API, shutdown fx.Shut
 	return s
 }
 
-var Module = fx.Module("http-api", fx.Provide(NewConfig, NewReadiness, NewAPI, NewServer), fx.Invoke(func(*Server) {}))
+var Module = fx.Module("http-api", fx.Provide(NewConfig, NewReadiness, NewMetrics, NewAPI, NewServer), fx.Invoke(func(*Server) {}))
