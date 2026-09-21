@@ -23,6 +23,7 @@ import (
 	"github.com/d-dionisio/backend-challenge/internal/application"
 	"github.com/d-dionisio/backend-challenge/internal/application/ports"
 	"github.com/d-dionisio/backend-challenge/internal/domain"
+	"github.com/d-dionisio/backend-challenge/internal/infrastructure/auth"
 	"github.com/d-dionisio/backend-challenge/internal/infrastructure/messaging"
 	"github.com/d-dionisio/backend-challenge/internal/infrastructure/workers"
 	"github.com/google/uuid"
@@ -534,8 +535,8 @@ func TestSQSFullFxComposition(t *testing.T) {
 	query.Set("search_path", pool.Config().ConnConfig.RuntimeParams["search_path"])
 	dsn.RawQuery = query.Encode()
 	var workerPool *pgxpool.Pool
-	app := fx.New(Module, application.Module, messaging.Module, messaging.ConsumerModule, workers.Module, workers.WagerModule,
-		fx.Replace(Config{DatabaseURL: dsn.String()}, messaging.Config{Region: "us-east-1", Endpoint: os.Getenv("TEST_SQS_ENDPOINT"), QueueURL: eventsQueue},
+	app := fx.New(auth.Module, Module, application.Module, messaging.Module, messaging.ConsumerModule, workers.Module, workers.WagerModule,
+		fx.Replace(oidcTestConfig(t), Config{DatabaseURL: dsn.String()}, messaging.Config{Region: "us-east-1", Endpoint: os.Getenv("TEST_SQS_ENDPOINT"), QueueURL: eventsQueue},
 			messaging.ConsumerConfig{QueueURL: queue, ProviderBySender: map[string]string{"000000000000": "provider-a"}, ProcessingTimeout: 5 * time.Second}),
 		fx.Populate(&workerPool), fx.NopLogger)
 	if err := app.Start(ctx); err != nil {
