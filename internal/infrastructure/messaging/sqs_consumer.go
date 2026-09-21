@@ -22,17 +22,18 @@ import (
 )
 
 type SQSConsumer struct {
-	client   *sqs.Client
-	settings ConsumerConfig
-	useCase  *application.ProcessWager
-	logger   *slog.Logger
+	client         *sqs.Client
+	eventsQueueURL string
+	settings       ConsumerConfig
+	useCase        *application.ProcessWager
+	logger         *slog.Logger
 }
 
 func NewSQSConsumer(lifecycle fx.Lifecycle, connection Config, settings ConsumerConfig, useCase *application.ProcessWager) (*SQSConsumer, error) {
 	if err := settings.validate(); err != nil {
 		return nil, err
 	}
-	c := &SQSConsumer{settings: settings, useCase: useCase, logger: slog.New(slog.NewJSONHandler(os.Stdout, nil))}
+	c := &SQSConsumer{settings: settings, eventsQueueURL: connection.QueueURL, useCase: useCase, logger: slog.New(slog.NewJSONHandler(os.Stdout, nil))}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	lifecycle.Append(fx.Hook{
 		OnStart: func(ctx context.Context) error {
@@ -67,6 +68,21 @@ func NewSQSConsumer(lifecycle fx.Lifecycle, connection Config, settings Consumer
 		OnStop: func(context.Context) error { transport.CloseIdleConnections(); return nil },
 	})
 	return c, nil
+}
+
+// Readiness consulta o broker sem receber ou publicar mensagens.
+func (c *SQSConsumer) CheckReady(ctx context.Context) error {
+	for _, queue := range []string{c.settings.QueueURL, c.eventsQueueURL} {
+		if queue == "" {
+			continue
+		}
+		if _, err := c.client.GetQueueAttributes(ctx, &sqs.GetQueueAttributesInput{
+			QueueUrl: aws.String(queue), AttributeNames: []types.QueueAttributeName{types.QueueAttributeNameQueueArn},
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Uma mensagem por busca: nenhuma mensagem fica aguardando sua vez em

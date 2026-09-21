@@ -5,6 +5,7 @@ import (
 
 	"github.com/d-dionisio/backend-challenge/internal/application"
 	"github.com/d-dionisio/backend-challenge/internal/infrastructure/auth"
+	"github.com/d-dionisio/backend-challenge/internal/infrastructure/httpapi"
 	"github.com/d-dionisio/backend-challenge/internal/infrastructure/messaging"
 	"github.com/d-dionisio/backend-challenge/internal/infrastructure/postgres"
 	"github.com/d-dionisio/backend-challenge/internal/infrastructure/workers"
@@ -20,12 +21,7 @@ func main() {
 		workers.Module,
 		workers.WagerModule,
 
-		fx.Invoke(
-			func(
-				openWallet *application.OpenWallet,
-			) {
-			},
-		),
+		httpapi.Module,
 	)
 
 	app.Run()
