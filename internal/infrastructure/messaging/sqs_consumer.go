@@ -25,6 +25,7 @@ import (
 type SQSConsumer struct {
 	client         *sqs.Client
 	eventsQueueURL string
+	dlqQueueURL    string
 	settings       ConsumerConfig
 	useCase        *application.ProcessWager
 	metrics        *observability.Metrics
@@ -84,6 +85,7 @@ func NewSQSConsumer(lifecycle fx.Lifecycle, connection Config, settings Consumer
 				transport.CloseIdleConnections()
 				return errors.New("SQS DLQ redrive policy is not restricted to the input queue")
 			}
+			c.dlqQueueURL = aws.ToString(dlqURL.QueueUrl)
 			return nil
 		},
 		OnStop: func(context.Context) error { transport.CloseIdleConnections(); return nil },
@@ -111,6 +113,23 @@ func (c *SQSConsumer) CheckReady(ctx context.Context) error {
 			return err
 		}
 	}
+	attributes, err := c.client.GetQueueAttributes(ctx, &sqs.GetQueueAttributesInput{
+		QueueUrl: aws.String(c.dlqQueueURL), AttributeNames: []types.QueueAttributeName{
+			types.QueueAttributeNameApproximateNumberOfMessages, types.QueueAttributeNameApproximateNumberOfMessagesNotVisible, types.QueueAttributeNameApproximateNumberOfMessagesDelayed,
+		},
+	})
+	if err != nil {
+		return err
+	}
+	var depth int64
+	for _, key := range []string{"ApproximateNumberOfMessages", "ApproximateNumberOfMessagesNotVisible", "ApproximateNumberOfMessagesDelayed"} {
+		value, err := strconv.ParseInt(attributes.Attributes[key], 10, 64)
+		if err != nil || value < 0 {
+			return errors.New("invalid DLQ depth")
+		}
+		depth += value
+	}
+	c.metrics.SetDLQDepth(depth)
 	return nil
 }
 
@@ -176,6 +195,7 @@ func (c *SQSConsumer) Handle(ctx context.Context, received *types.Message) error
 	}
 	if err != nil {
 		attempt, _ := strconv.Atoi(received.Attributes["ApproximateReceiveCount"])
+		c.metrics.ObserveProcessingError(err, time.Since(started))
 		permanent := permanentMessageError(err)
 		delay := messageRetryDelay(attempt)
 		if permanent {
@@ -185,9 +205,6 @@ func (c *SQSConsumer) Handle(ctx context.Context, received *types.Message) error
 			c.metrics.ObserveDeadLetter(errorMetricReason(err))
 		} else {
 			c.metrics.ObserveMessageRetry(errorMetricReason(err))
-		}
-		if errors.Is(err, application.ErrIdempotencyConflict) || errors.Is(err, ports.ErrInboxConflict) || errors.Is(err, ports.ErrInboxIncomplete) {
-			c.metrics.ObserveConcurrencyConflict(errorMetricReason(err))
 		}
 		c.logger.Error("SQS treatment failed", "messageId", message.MessageID, "correlationId", input.CorrelationID,
 			"providerId", input.ProviderID, "walletId", input.WalletID, "permanent", permanent, "attempts", attempt)
@@ -204,9 +221,6 @@ func (c *SQSConsumer) Handle(ctx context.Context, received *types.Message) error
 		return err
 	}
 	c.metrics.ObserveWagerResult(string(result.Status), result.IdempotentReplay, time.Since(started))
-	if result.IdempotentReplay {
-		c.metrics.ObserveDuplicateMessage("sqs_replay")
-	}
 	c.logger.Info("SQS treatment acknowledged", "messageId", message.MessageID, "correlationId", input.CorrelationID,
 		"providerId", input.ProviderID, "walletId", input.WalletID, "transactionId", result.TransactionID, "status", result.Status, "replay", result.IdempotentReplay)
 	return nil

@@ -28,6 +28,7 @@ import (
 	"github.com/d-dionisio/backend-challenge/internal/domain"
 	"github.com/d-dionisio/backend-challenge/internal/infrastructure/messaging"
 	"github.com/d-dionisio/backend-challenge/internal/infrastructure/workers"
+	"github.com/d-dionisio/backend-challenge/internal/observability"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/fx"
@@ -60,6 +61,7 @@ func outboxQueue(t *testing.T, ctx context.Context) (*sqs.Client, string) {
 	// O teste em Docker acessa o mesmo LocalStack por host.docker.internal.
 	queueURL.Scheme, queueURL.Host = base.Scheme, base.Host
 	address := queueURL.String()
+	configureTestQueuePolicy(t, ctx, client, address)
 	t.Cleanup(func() {
 		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -407,7 +409,7 @@ func TestOutboxFullFxLifecycle(t *testing.T) {
 	query.Set("search_path", schemaPool.Config().ConnConfig.RuntimeParams["search_path"])
 	databaseURL.RawQuery = query.Encode()
 	var workerPool *pgxpool.Pool
-	app := fx.New(Module, application.Module, messaging.Module, workers.Module,
+	app := fx.New(Module, application.Module, messaging.Module, workers.Module, fx.Provide(observability.NewMetrics),
 		fx.Replace(Config{DatabaseURL: databaseURL.String()},
 			messaging.Config{Region: "us-east-1", Endpoint: os.Getenv("TEST_SQS_ENDPOINT"), QueueURL: queueURL},
 			workers.OutboxConfig{PollInterval: 10 * time.Millisecond, AttemptTimeout: 5 * time.Second,
@@ -476,7 +478,7 @@ func TestOutboxShutdownDuringSQSSend(t *testing.T) {
 			Policy: application.OutboxPolicy{LeaseDuration: time.Minute, InitialDelay: time.Second, MaxDelay: time.Minute}}),
 		fx.Provide(fx.Annotate(messaging.NewSQSPublisher, fx.As(new(ports.EventPublisher))),
 			func() ports.OutboxPublisherRepository { return NewOutboxPublisherRepository(pool) }, application.NewPublishOutbox),
-		fx.Invoke(workers.RegisterOutboxWorker), fx.NopLogger)
+		fx.Provide(observability.NewMetrics), fx.Invoke(workers.RegisterOutboxWorker), fx.NopLogger)
 	if err := app.Start(ctx); err != nil {
 		t.Fatal(err)
 	}

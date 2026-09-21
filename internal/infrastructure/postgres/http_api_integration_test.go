@@ -56,6 +56,7 @@ func startHTTPAPI(t *testing.T, withWorkers bool) *httpFixture {
 	}
 	eventsURL.Scheme, eventsURL.Host = endpoint.Scheme, endpoint.Host
 	f.eventsQueue = eventsURL.String()
+	configureTestQueuePolicy(t, ctx, f.client, f.eventsQueue)
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -255,6 +256,10 @@ func TestHTTPWagerContractsAndReplay(t *testing.T) {
 	}
 	expectHTTP(t, "POST", path, provider, input.IdempotencyKey, strings.Replace(body, `"25.00"`, `"26.00"`, 1), 409)
 	expectHTTP(t, "POST", path, provider, "another-key", body, 409)
+	metrics := expectHTTP(t, "GET", f.address+"/metrics", "", "", "", 200)
+	if !strings.Contains(metrics, `wager_concurrency_conflicts_total{scope="idempotency_conflict"} 2`) {
+		t.Fatal("HTTP conflicts were not measured", metrics)
+	}
 	expectHTTP(t, "POST", path, other, input.IdempotencyKey, body, 403) // Inclusive no replay.
 	idPath := path + "/" + result.TransactionID.String()
 	byID := decodeHTTPWager(t, expectHTTP(t, "GET", idPath, provider, "", "", 200))

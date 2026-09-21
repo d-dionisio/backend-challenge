@@ -5,6 +5,8 @@ package postgres
 import (
 	"context"
 	"errors"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,10 +14,60 @@ import (
 	"github.com/d-dionisio/backend-challenge/internal/application/ports"
 	"github.com/d-dionisio/backend-challenge/internal/domain"
 	"github.com/d-dionisio/backend-challenge/internal/infrastructure/workers"
+	"github.com/d-dionisio/backend-challenge/internal/observability"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/fx"
 )
+
+func TestReferenceWorkerReportsFinalResults(t *testing.T) {
+	for _, resolve := range []bool{false, true} {
+		name := "rejected"
+		if resolve {
+			name = "processed"
+		}
+		t.Run(name, func(t *testing.T) {
+			pool := storageTestPool(t)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			wallet, _, _ := pendingRefund(t, ctx, pool, "late-metric")
+			if resolve {
+				if _, err := application.NewProcessWager(NewUnitOfWork(pool)).Execute(ctx, "provider-a", wagerInput(t, wallet, domain.WagerKindBet, "25", "late-metric")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			metrics := observability.NewMetrics()
+			config := workers.ReferenceConfig{PollInterval: time.Millisecond, AttemptTimeout: time.Second, Policy: application.ReferenceRetryPolicy{MaxAttempts: 2, InitialDelay: 10 * time.Millisecond, MaxDelay: 10 * time.Millisecond}}
+			app := fx.New(fx.Supply(config, metrics, application.NewRetryReferences(NewUnitOfWork(pool))), fx.Invoke(workers.RegisterReferenceWorker), fx.NopLogger)
+			if err := app.Start(ctx); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				if err := app.Stop(cleanup); err != nil {
+					t.Error(err)
+				}
+			})
+			for {
+				response := httptest.NewRecorder()
+				metrics.ServeHTTP(response, httptest.NewRequest("GET", "/metrics", nil))
+				if strings.Contains(response.Body.String(), `wager_results_total{status="`+name+`"} 1`) {
+					if !resolve && !strings.Contains(response.Body.String(), `wager_retries_total{reason="reference_pending"} 1`) {
+						t.Fatal("reference retry missing", response.Body.String())
+					}
+					break
+				}
+				select {
+				case <-ctx.Done():
+					t.Fatal("terminal reference result not measured", response.Body.String())
+				case <-time.After(time.Millisecond):
+				}
+			}
+			assertWalletLedger(t, ctx, pool, wallet.ID(), 10000)
+		})
+	}
+}
 
 func pendingRefund(t *testing.T, ctx context.Context, pool *pgxpool.Pool, reference string) (*domain.Wallet, application.ProcessWagerInput, *application.WagerResult) {
 	t.Helper()
@@ -192,7 +244,7 @@ func TestReferenceWorkerShutdownReleasesInFlightWork(t *testing.T) {
 	defer workerPool.Close()
 	workerConfig := workers.ReferenceConfig{PollInterval: time.Hour, AttemptTimeout: 15 * time.Second,
 		Policy: application.ReferenceRetryPolicy{MaxAttempts: 2, InitialDelay: time.Second, MaxDelay: time.Minute}}
-	app := fx.New(application.Module, fx.Supply(workerConfig), fx.Provide(func(lc fx.Lifecycle) ports.UnitOfWork {
+	app := fx.New(application.Module, fx.Provide(observability.NewMetrics), fx.Supply(workerConfig), fx.Provide(func(lc fx.Lifecycle) ports.UnitOfWork {
 		lc.Append(fx.Hook{OnStop: func(context.Context) error { workerPool.Close(); return nil }})
 		return NewUnitOfWork(workerPool)
 	}), fx.Invoke(workers.RegisterReferenceWorker), fx.NopLogger)

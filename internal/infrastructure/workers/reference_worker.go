@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/d-dionisio/backend-challenge/internal/application"
+	"github.com/d-dionisio/backend-challenge/internal/domain"
+	"github.com/d-dionisio/backend-challenge/internal/observability"
 	"go.uber.org/fx"
 )
 
@@ -51,7 +53,7 @@ func NewReferenceConfig() (ReferenceConfig, error) {
 	return config, nil
 }
 
-func RegisterReferenceWorker(lifecycle fx.Lifecycle, config ReferenceConfig, useCase *application.RetryReferences) error {
+func RegisterReferenceWorker(lifecycle fx.Lifecycle, config ReferenceConfig, useCase *application.RetryReferences, metrics *observability.Metrics) error {
 	if err := config.Policy.Validate(); err != nil {
 		return err
 	}
@@ -70,6 +72,7 @@ func RegisterReferenceWorker(lifecycle fx.Lifecycle, config ReferenceConfig, use
 				logger.Info("reference worker started")
 				defer logger.Info("reference worker stopped")
 				for ctx.Err() == nil {
+					started := time.Now()
 					attemptCtx, attemptCancel := context.WithTimeout(ctx, config.AttemptTimeout)
 					result, err := useCase.Execute(attemptCtx, config.Policy)
 					attemptCancel()
@@ -77,9 +80,15 @@ func RegisterReferenceWorker(lifecycle fx.Lifecycle, config ReferenceConfig, use
 						return
 					}
 					if err != nil {
+						metrics.ObserveProcessingError(err, time.Since(started))
+						metrics.ObserveMessageRetry("reference_error")
 						// Não registra erro SQL bruto, que pode conter dados do payload.
 						logger.Error("reference worker attempt failed", "retryAfter", config.PollInterval.String())
 					} else if result != nil {
+						metrics.ObserveWagerResult(string(result.Status), false, time.Since(started))
+						if result.Status == domain.WagerStatusPendingReference {
+							metrics.ObserveMessageRetry("reference_pending")
+						}
 						logger.Info("reference attempt committed", "transactionId", result.TransactionID, "walletId", result.WalletID,
 							"providerId", result.ProviderID, "correlationId", result.CorrelationID, "status", result.Status, "attempts", result.Attempts)
 						continue

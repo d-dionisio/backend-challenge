@@ -3,6 +3,7 @@ package messaging
 import (
 	"encoding/json"
 	"errors"
+	"path"
 	"strings"
 )
 
@@ -41,13 +42,18 @@ func validateQueuePolicy(raw, requiredAction string) error {
 	if strings.TrimSpace(raw) == "" || json.Unmarshal([]byte(raw), &policy) != nil {
 		return errors.New("SQS queue requires an IAM policy")
 	}
+	granted := false
 	for _, statement := range policy.Statement {
 		if !strings.EqualFold(statement.Effect, "Allow") || !hasAction(statement.Action, requiredAction) {
 			continue
 		}
-		if validPrincipals(statement.Principal.AWS) {
-			return nil
+		if !validPrincipals(statement.Principal.AWS) {
+			return errors.New("SQS queue policy permits the required action without explicit principals")
 		}
+		granted = true
+	}
+	if granted {
+		return nil
 	}
 	return errors.New("SQS queue policy does not grant the required least-privilege action to explicit principals")
 }
@@ -61,10 +67,8 @@ func validateNoWildcardAdministration(raw string) error {
 		if !strings.EqualFold(statement.Effect, "Allow") || !hasWildcardPrincipal(statement.Principal.AWS) {
 			continue
 		}
-		for _, action := range statement.Action {
-			if action == "*" || strings.EqualFold(action, "sqs:*") || strings.EqualFold(action, "sqs:ReceiveMessage") ||
-				strings.EqualFold(action, "sqs:DeleteMessage") || strings.EqualFold(action, "sqs:ChangeMessageVisibility") ||
-				strings.EqualFold(action, "sqs:SetQueueAttributes") {
+		for _, action := range []string{"sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:ChangeMessageVisibility", "sqs:SetQueueAttributes"} {
+			if hasAction(statement.Action, action) {
 				return errors.New("SQS queue policy grants unsafe wildcard administration")
 			}
 		}
@@ -83,17 +87,15 @@ func validateRedriveAllowPolicy(raw, sourceARN string) error {
 	if policy.RedrivePermission != "byQueue" {
 		return errors.New("SQS DLQ must restrict redrive permission by source queue")
 	}
-	for _, arn := range policy.SourceQueueARNs {
-		if arn == sourceARN {
-			return nil
-		}
+	if len(policy.SourceQueueARNs) == 1 && policy.SourceQueueARNs[0] == sourceARN {
+		return nil
 	}
 	return errors.New("SQS DLQ redrive policy does not allow the configured source queue")
 }
 
 func hasAction(actions []string, required string) bool {
 	for _, action := range actions {
-		if strings.EqualFold(action, required) {
+		if matched, _ := path.Match(strings.ToLower(action), strings.ToLower(required)); matched {
 			return true
 		}
 	}

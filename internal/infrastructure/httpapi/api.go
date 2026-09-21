@@ -175,6 +175,7 @@ func (a *API) createWager(w http.ResponseWriter, r *http.Request) {
 
 	result, err := a.processWager.Execute(r.Context(), identity.ProviderID, input)
 	if err != nil {
+		a.metrics.ObserveProcessingError(err, time.Since(started))
 		a.fail(w, r, err)
 		return
 	}

@@ -1,6 +1,7 @@
 package observability
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -8,6 +9,10 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/d-dionisio/backend-challenge/internal/application"
+	"github.com/d-dionisio/backend-challenge/internal/application/ports"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 type Metrics struct {
@@ -25,6 +30,8 @@ type Metrics struct {
 	outboxPublishResults map[string]uint64
 	outboxPublishRetries map[string]uint64
 	outboxClaimFailures  uint64
+	dlqDepth             int64
+	dlqDepthKnown        bool
 }
 
 type durationSummary struct {
@@ -73,6 +80,35 @@ func (m *Metrics) ObserveDeadLetter(reason string) {
 	m.deadLetterMessages[label(reason)]++
 }
 
+func (m *Metrics) SetDLQDepth(depth int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.dlqDepth, m.dlqDepthKnown = depth, true
+}
+
+func (m *Metrics) ObserveProcessingError(err error, latency time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.processingLatency.observe(latency)
+	var scope string
+	var pgError *pgconn.PgError
+	switch {
+	case errors.Is(err, application.ErrIdempotencyConflict):
+		scope = "idempotency_conflict"
+	case errors.Is(err, ports.ErrInboxConflict):
+		scope = "inbox_conflict"
+	case errors.Is(err, ports.ErrInboxIncomplete):
+		scope = "inbox_incomplete"
+	case errors.Is(err, ports.ErrWalletConcurrentUpdate):
+		scope = "wallet_version"
+	case errors.As(err, &pgError) && (pgError.Code == "40001" || pgError.Code == "40P01"):
+		scope = "database_conflict"
+	}
+	if scope != "" {
+		m.concurrencyConflicts[scope]++
+	}
+}
+
 func (m *Metrics) ObserveConcurrencyConflict(scope string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -112,7 +148,10 @@ func (m *Metrics) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	writeCounterMap(w, "wager_results_total", "Wager processing results by final status.", "status", m.wagerResults)
 	writeCounterMap(w, "wager_duplicates_total", "Duplicate wager requests or messages detected.", "source", m.duplicateMessages)
 	writeCounterMap(w, "wager_retries_total", "Wager message retries scheduled before acknowledgement.", "reason", m.messageRetries)
-	writeCounterMap(w, "wager_dlq_total", "Wager messages left for broker DLQ redrive.", "reason", m.deadLetterMessages)
+	writeCounterMap(w, "wager_dlq_redrive_decisions_total", "Consumer decisions to leave a delivery for broker redrive; not unique messages.", "reason", m.deadLetterMessages)
+	if m.dlqDepthKnown {
+		_, _ = fmt.Fprintf(w, "# HELP wager_dlq_messages Approximate DLQ depth reported by SQS at the last successful readiness check.\n# TYPE wager_dlq_messages gauge\nwager_dlq_messages %d\n", m.dlqDepth)
+	}
 	writeCounterMap(w, "wager_concurrency_conflicts_total", "Concurrent write conflicts detected while processing wagers.", "scope", m.concurrencyConflicts)
 	writeCounterMap(w, "outbox_publish_results_total", "Outbox publishing attempts by result.", "result", m.outboxPublishResults)
 	writeCounterMap(w, "outbox_publish_retries_total", "Outbox publish retries by attempt number.", "attempt", m.outboxPublishRetries)

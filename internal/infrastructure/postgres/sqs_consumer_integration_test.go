@@ -26,6 +26,7 @@ import (
 	"github.com/d-dionisio/backend-challenge/internal/infrastructure/auth"
 	"github.com/d-dionisio/backend-challenge/internal/infrastructure/messaging"
 	"github.com/d-dionisio/backend-challenge/internal/infrastructure/workers"
+	"github.com/d-dionisio/backend-challenge/internal/observability"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/fx"
@@ -72,6 +73,14 @@ func wagerQueues(t *testing.T, ctx context.Context) (*sqs.Client, string, string
 		t.Fatal(err)
 	}
 	queue := create("wager-test-"+uuid.NewString()+".fifo", map[string]string{"FifoQueue": "true", "ContentBasedDeduplication": "false", "VisibilityTimeout": "30", "RedrivePolicy": string(redrive)})
+	sourceARN := configureTestQueuePolicy(t, ctx, client, queue)
+	allow, err := json.Marshal(map[string]any{"redrivePermission": "byQueue", "sourceQueueArns": []string{sourceARN}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.SetQueueAttributes(ctx, &sqs.SetQueueAttributesInput{QueueUrl: aws.String(dlq), Attributes: map[string]string{"RedriveAllowPolicy": string(allow)}}); err != nil {
+		t.Fatal(err)
+	}
 	return client, queue, dlq
 }
 
@@ -82,6 +91,7 @@ func startWagerConsumer(t *testing.T, pool *pgxpool.Pool, queueURL string, worke
 	t.Setenv("AWS_SESSION_TOKEN", "")
 	var consumer *messaging.SQSConsumer
 	options := []fx.Option{
+		fx.Provide(observability.NewMetrics),
 		fx.Supply(messaging.Config{Region: "us-east-1", Endpoint: os.Getenv("TEST_SQS_ENDPOINT")},
 			messaging.ConsumerConfig{QueueURL: queueURL, ProviderBySender: map[string]string{"000000000000": "provider-a"}, ProcessingTimeout: 5 * time.Second}),
 		fx.Provide(func(lifecycle fx.Lifecycle) *application.ProcessWager {
@@ -535,7 +545,7 @@ func TestSQSFullFxComposition(t *testing.T) {
 	query.Set("search_path", pool.Config().ConnConfig.RuntimeParams["search_path"])
 	dsn.RawQuery = query.Encode()
 	var workerPool *pgxpool.Pool
-	app := fx.New(auth.Module, Module, application.Module, messaging.Module, messaging.ConsumerModule, workers.Module, workers.WagerModule,
+	app := fx.New(auth.Module, Module, application.Module, messaging.Module, messaging.ConsumerModule, workers.Module, workers.WagerModule, fx.Provide(observability.NewMetrics),
 		fx.Replace(oidcTestConfig(t), Config{DatabaseURL: dsn.String()}, messaging.Config{Region: "us-east-1", Endpoint: os.Getenv("TEST_SQS_ENDPOINT"), QueueURL: eventsQueue},
 			messaging.ConsumerConfig{QueueURL: queue, ProviderBySender: map[string]string{"000000000000": "provider-a"}, ProcessingTimeout: 5 * time.Second}),
 		fx.Populate(&workerPool), fx.NopLogger)
