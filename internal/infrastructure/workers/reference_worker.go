@@ -108,4 +108,5 @@ func RegisterReferenceWorker(lifecycle fx.Lifecycle, config ReferenceConfig, use
 	return nil
 }
 
-var Module = fx.Module("workers", fx.Provide(NewReferenceConfig), fx.Invoke(RegisterReferenceWorker))
+var Module = fx.Module("workers", fx.Provide(NewReferenceConfig, NewOutboxConfig),
+	fx.Invoke(RegisterReferenceWorker, RegisterOutboxWorker))

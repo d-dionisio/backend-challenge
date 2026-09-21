@@ -20,5 +20,21 @@ services:
       timeout: 5s
       retries: 5
 
+  localstack:
+    image: localstack/localstack:3.8.1
+    ports:
+      - "${LOCALSTACK_PORT:-14566}:4566"
+    environment:
+      SERVICES: sqs
+      AWS_DEFAULT_REGION: us-east-1
+      SQS_ENDPOINT_STRATEGY: path
+    volumes:
+      - ./scripts/init-sqs.py:/etc/localstack/init/ready.d/init-sqs.py:ro
+    healthcheck:
+      test: ["CMD-SHELL", "awslocal sqs get-queue-url --queue-name wager-events --region us-east-1 > /dev/null"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
 volumes:
   postgres_data:
