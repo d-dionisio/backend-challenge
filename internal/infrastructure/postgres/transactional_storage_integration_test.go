@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/d-dionisio/backend-challenge/internal/application"
 	"github.com/d-dionisio/backend-challenge/internal/application/ports"
 	"github.com/d-dionisio/backend-challenge/internal/domain"
 	"github.com/google/uuid"
@@ -347,8 +348,9 @@ func TestZeroOpeningAndProcessedWithoutLedger(t *testing.T) {
 func TestPostgresFxLifecycle(t *testing.T) {
 	t.Setenv("DATABASE_URL", os.Getenv("TEST_DATABASE_URL"))
 	var unit ports.UnitOfWork
+	var openWallet *application.OpenWallet
 	var pool *pgxpool.Pool
-	app := fx.New(Module, fx.Populate(&unit, &pool), fx.NopLogger)
+	app := fx.New(Module, application.Module, fx.Populate(&unit, &pool, &openWallet), fx.NopLogger)
 	if err := app.Err(); err != nil {
 		t.Fatal(err)
 	}
@@ -357,8 +359,8 @@ func TestPostgresFxLifecycle(t *testing.T) {
 	if err := app.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if unit == nil {
-		t.Fatal("unit of work was not injected")
+	if unit == nil || openWallet == nil {
+		t.Fatal("unit of work or use case was not injected")
 	}
 	if err := pool.Ping(ctx); err != nil {
 		t.Fatal(err)
