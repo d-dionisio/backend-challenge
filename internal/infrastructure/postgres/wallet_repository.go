@@ -21,7 +21,8 @@ type DBTX interface {
 }
 
 type WalletRepository struct {
-	db DBTX
+	db            DBTX
+	inTransaction bool
 }
 
 func NewWalletRepository(pool *pgxpool.Pool) *WalletRepository {
@@ -35,7 +36,8 @@ var _ ports.WalletRepository = (*WalletRepository)(nil)
 func (r *WalletRepository) WithTx(tx pgx.Tx) *WalletRepository {
 
 	return &WalletRepository{
-		db: tx,
+		db:            tx,
+		inTransaction: tx != nil,
 	}
 }
 
@@ -99,8 +101,20 @@ func isUniqueViolation(err error) bool {
 }
 
 func (r *WalletRepository) FindByID(ctx context.Context, walletID uuid.UUID) (*domain.Wallet, error) {
+	return r.findByID(ctx, walletID, false)
+}
 
-	const query = `
+// O lock precisa durar até o commit ou rollback da transação do chamador.
+func (r *WalletRepository) FindByIDForUpdate(ctx context.Context, walletID uuid.UUID) (*domain.Wallet, error) {
+	if !r.inTransaction {
+		return nil, ports.ErrTransactionRequired
+	}
+	return r.findByID(ctx, walletID, true)
+}
+
+func (r *WalletRepository) findByID(ctx context.Context, walletID uuid.UUID, lock bool) (*domain.Wallet, error) {
+
+	query := `
 		SELECT
 			id,
 			player_id,
@@ -112,6 +126,9 @@ func (r *WalletRepository) FindByID(ctx context.Context, walletID uuid.UUID) (*d
 		FROM wallets
 		WHERE id = $1
 	`
+	if lock {
+		query += " FOR UPDATE"
+	}
 
 	var (
 		id           uuid.UUID

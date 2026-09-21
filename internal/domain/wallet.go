@@ -2,7 +2,7 @@ package domain
 
 import (
 	"errors"
-	"strings"
+	"math"
 	"time"
 
 	"github.com/google/uuid"
@@ -24,6 +24,15 @@ type Wallet struct {
 }
 
 func NewWallet(playerID uuid.UUID, initialBalance Money) (*Wallet, error) {
+	if playerID == uuid.Nil {
+		return nil, ErrInvalidWallet
+	}
+	if initialBalance.Validate() != nil {
+		return nil, ErrInvalidWallet
+	}
+	if initialBalance.Amount() < 0 {
+		return nil, ErrInvalidWallet
+	}
 	now := time.Now().UTC()
 
 	return &Wallet{
@@ -61,6 +70,9 @@ func (w *Wallet) UpdatedAt() time.Time {
 }
 
 func (w *Wallet) Credit(money Money) error {
+	if err := w.validateMovement(money); err != nil {
+		return err
+	}
 	if money.Currency() != w.balance.Currency() {
 		return ErrWalletCurrency
 	}
@@ -78,6 +90,9 @@ func (w *Wallet) Credit(money Money) error {
 }
 
 func (w *Wallet) Debit(money Money) error {
+	if err := w.validateMovement(money); err != nil {
+		return err
+	}
 	if money.Currency() != w.balance.Currency() {
 		return ErrWalletCurrency
 	}
@@ -113,7 +128,13 @@ func RehydrateWallet(id uuid.UUID, playerID uuid.UUID, balance Money, version in
 		return nil, ErrInvalidWallet
 	}
 
+	if balance.Validate() != nil {
+		return nil, ErrInvalidWallet
+	}
 	if balance.Amount() < 0 {
+		return nil, ErrInvalidWallet
+	}
+	if createdAt.IsZero() || updatedAt.Before(createdAt) {
 		return nil, ErrInvalidWallet
 	}
 
@@ -127,14 +148,21 @@ func RehydrateWallet(id uuid.UUID, playerID uuid.UUID, balance Money, version in
 	}, nil
 }
 
-func MoneyFromMinorUnits(amount int64, currency string) (Money, error) {
-
-	if strings.TrimSpace(currency) == "" {
-		return Money{}, ErrInvalidMoney
+func (w *Wallet) validateMovement(money Money) error {
+	if w == nil {
+		return ErrInvalidWallet
 	}
-
-	return Money{
-		amount:   amount,
-		currency: currency,
-	}, nil
+	if w.id == uuid.Nil || w.playerID == uuid.Nil {
+		return ErrInvalidWallet
+	}
+	if w.balance.Validate() != nil || w.balance.Amount() < 0 {
+		return ErrInvalidWallet
+	}
+	if w.version < 1 || w.version == math.MaxInt64 {
+		return ErrInvalidWallet
+	}
+	if !money.IsPositive() {
+		return ErrInvalidMoney
+	}
+	return nil
 }
