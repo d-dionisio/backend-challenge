@@ -2,6 +2,8 @@ package application
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"strings"
 	"unicode/utf8"
@@ -43,6 +45,26 @@ func NewProcessWager(unitOfWork ports.UnitOfWork) *ProcessWager {
 
 // authorizedProviderID deve vir da identidade verificada pelo adaptador de entrada.
 func (useCase *ProcessWager) Execute(ctx context.Context, authorizedProviderID string, input ProcessWagerInput) (*WagerResult, error) {
+	return useCase.execute(ctx, authorizedProviderID, input, nil)
+}
+
+const WagerConsumerName = "wager-transactions"
+
+var ErrInvalidMessage = errors.New("invalid wager message")
+
+type inboxMessage struct{ id, hash string }
+
+// O hash da inbox cobre os bytes do envelope recebido. O hash financeiro
+// continua sendo calculado com as mesmas normalizações de Execute.
+func (useCase *ProcessWager) ExecuteMessage(ctx context.Context, authorizedProviderID string, input ProcessWagerInput, messageID string, body []byte) (*WagerResult, error) {
+	if strings.TrimSpace(messageID) == "" || !utf8.ValidString(messageID) || len(body) == 0 {
+		return nil, ErrInvalidMessage
+	}
+	hash := sha256.Sum256(body)
+	return useCase.execute(ctx, authorizedProviderID, input, &inboxMessage{id: messageID, hash: hex.EncodeToString(hash[:])})
+}
+
+func (useCase *ProcessWager) execute(ctx context.Context, authorizedProviderID string, input ProcessWagerInput, message *inboxMessage) (*WagerResult, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -77,7 +99,7 @@ func (useCase *ProcessWager) Execute(ctx context.Context, authorizedProviderID s
 		input.CorrelationID = uuid.NewString()
 	}
 	var result *WagerResult
-	err = useCase.unitOfWork.WithinTransaction(ctx, func(r ports.Repositories) error {
+	process := func(r ports.Repositories) error {
 		replay, err := findWagerReplay(ctx, r.Wagers, transaction)
 		if err != nil {
 			return err
@@ -122,6 +144,31 @@ func (useCase *ProcessWager) Execute(ctx context.Context, authorizedProviderID s
 			return err
 		}
 		result = wagerResult(transaction, false)
+		return nil
+	}
+	err = useCase.unitOfWork.WithinTransaction(ctx, func(r ports.Repositories) error {
+		if message != nil {
+			duplicate, err := r.Inbox.Register(ctx, WagerConsumerName, message.id, message.hash)
+			if err != nil {
+				return err
+			}
+			if duplicate {
+				result, err = findWagerReplay(ctx, r.Wagers, transaction)
+				if err != nil {
+					return err
+				}
+				if result == nil {
+					return ports.ErrInboxIncomplete
+				}
+				return nil
+			}
+		}
+		if err := process(r); err != nil {
+			return err
+		}
+		if message != nil {
+			return r.Inbox.Complete(ctx, WagerConsumerName, message.id)
+		}
 		return nil
 	})
 	if err != nil {

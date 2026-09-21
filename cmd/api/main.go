@@ -14,7 +14,9 @@ func main() {
 		postgres.Module,
 		application.Module,
 		messaging.Module,
+		messaging.ConsumerModule,
 		workers.Module,
+		workers.WagerModule,
 
 		fx.Invoke(
 			func(
