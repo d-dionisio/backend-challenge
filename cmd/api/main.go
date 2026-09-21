@@ -5,12 +5,14 @@ import (
 
 	"github.com/d-dionisio/backend-challenge/internal/application"
 	"github.com/d-dionisio/backend-challenge/internal/infrastructure/postgres"
+	"github.com/d-dionisio/backend-challenge/internal/infrastructure/workers"
 )
 
 func main() {
 	app := fx.New(
 		postgres.Module,
 		application.Module,
+		workers.Module,
 
 		fx.Invoke(
 			func(

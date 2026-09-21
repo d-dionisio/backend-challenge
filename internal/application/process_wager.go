@@ -24,6 +24,7 @@ const (
 	FailureReferenceUnsuccessful       = "REFERENCE_UNSUCCESSFUL"
 	FailureAlreadyReversed             = "ALREADY_REVERSED"
 	FailureMoneyOverflow               = "MONEY_OVERFLOW"
+	FailureReferenceNotFound           = "REFERENCE_NOT_FOUND"
 )
 
 type WagerResult struct {
@@ -265,6 +266,10 @@ func rejectWager(ctx context.Context, r ports.Repositories, transaction *domain.
 }
 
 func waitForReference(ctx context.Context, r ports.Repositories, transaction *domain.WagerTransaction, input ProcessWagerInput) error {
+	// A retomada não repete a transição nem o evento de entrada em espera.
+	if transaction.Status() == domain.WagerStatusPendingReference {
+		return nil
+	}
 	if err := transaction.MarkPendingReference(); err != nil {
 		return err
 	}

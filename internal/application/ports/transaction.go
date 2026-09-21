@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"time"
 
 	"github.com/d-dionisio/backend-challenge/internal/domain"
 	"github.com/google/uuid"
@@ -25,6 +26,15 @@ type WagerRepository interface {
 	FindByIdempotencyKey(context.Context, string, string) (*domain.WagerTransaction, error)
 	HasSuccessfulReversal(context.Context, uuid.UUID) (bool, error)
 	Update(context.Context, *domain.WagerTransaction) error
+	ClaimPendingReference(context.Context) (*PendingReference, error)
+	ScheduleReferenceRetry(context.Context, uuid.UUID, int, time.Duration) error
+}
+
+type PendingReference struct {
+	Transaction   *domain.WagerTransaction
+	Attempts      int
+	CorrelationID string
+	CausationID   string
 }
 
 type LedgerRepository interface {
